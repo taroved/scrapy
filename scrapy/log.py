@@ -8,6 +8,7 @@ import logging
 import warnings
 
 from twisted.python import log
+from twisted.python import syslog
 
 import scrapy
 from scrapy.utils.python import unicode_to_str
@@ -46,6 +47,32 @@ class ScrapyFileLogObserver(log.FileLogObserver):
         ev = _adapt_eventdict(eventDict, self.level, self.encoding)
         if ev is not None:
             log.FileLogObserver.emit(self, ev)
+        return ev
+
+    def _emit_with_crawler(self, eventDict):
+        ev = self._emit(eventDict)
+        if ev:
+            level = ev['logLevel']
+            sname = 'log_count/%s' % level_names.get(level, level)
+            self.crawler.stats.inc_value(sname)
+
+class ScrapySyslogObserver(syslog.SyslogObserver):
+
+    def __init__(self, level=INFO, encoding='utf-8', crawler=None):
+        self.level = level
+        self.encoding = encoding
+        prefix = 'scrapy'
+        if crawler:
+            self.crawler = crawler
+            self.emit = self._emit_with_crawler
+        else:
+            self.emit = self._emit
+        syslog.SyslogObserver.__init__(self, 'scrapy')
+
+    def _emit(self, eventDict):
+        ev = _adapt_eventdict(eventDict, self.level, self.encoding, False)
+        if ev is not None:
+            syslog.SyslogObserver.emit(self, ev)
         return ev
 
     def _emit_with_crawler(self, eventDict):
@@ -114,12 +141,15 @@ def _get_log_level(level_name_or_id):
 def start(logfile=None, loglevel='INFO', logstdout=True, logencoding='utf-8', crawler=None):
     loglevel = _get_log_level(loglevel)
     file = open(logfile, 'a') if logfile else sys.stderr
-    sflo = ScrapyFileLogObserver(file, loglevel, logencoding, crawler)
+    obs = ScrapyFileLogObserver(file, loglevel, logencoding, crawler)
+    syslog_obs = ScrapySyslogObserver(loglevel, logencoding, crawler)
+
     _oldshowwarning = warnings.showwarning
-    log.startLoggingWithObserver(sflo.emit, setStdout=logstdout)
+    log.startLoggingWithObserver(obs.emit, setStdout=logstdout)
+    log.addObserver(syslog_obs.emit)
     # restore warnings, wrongly silenced by Twisted
     warnings.showwarning = _oldshowwarning
-    return sflo
+    return obs
 
 def msg(message=None, _level=INFO, **kw):
     kw['logLevel'] = kw.pop('level', _level)
