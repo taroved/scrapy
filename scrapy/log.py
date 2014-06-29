@@ -47,6 +47,13 @@ class ScrapyFileLogObserver(log.FileLogObserver):
         ev = _adapt_eventdict(eventDict, self.level, self.encoding)
         if ev is not None:
             log.FileLogObserver.emit(self, ev)
+            request = ev.get('request')
+            if request:
+                snapshot_id = request.meta.get('politepol_snapshot_id')
+                if snapshot_id:
+                    constrings = request.meta.get('politepol_constrings')
+                    ev['format'] = 'Scrapy: ' + ev['format'] 
+                    snapshot_trace(constrings, snapshot_id, -ev['logLevel'] if ev['logLevel'] >= ERROR else ev['logLevel'], log.textFromEventDict(ev))                        
         return ev
 
     def _emit_with_crawler(self, eventDict):
@@ -55,6 +62,35 @@ class ScrapyFileLogObserver(log.FileLogObserver):
             level = ev['logLevel']
             sname = 'log_count/%s' % level_names.get(level, level)
             self.crawler.stats.inc_value(sname)
+            
+from sqlalchemy import engine, Boolean, Column, DateTime, Integer, String, Table, Text, Time
+from sqlalchemy.sql import select
+from datetime import datetime
+
+from sqlalchemy.ext.declarative import declarative_base
+Base = declarative_base()
+traces = Table(
+    'traces', Base.metadata,
+    Column('snapshot_id', Integer, nullable=False),
+    Column('code', Integer, nullable=False),
+    Column('message', Text, nullable=False),
+    Column('created_at', DateTime, nullable=False),
+    Column('updated_at', DateTime, nullable=False)
+)
+
+trace_engines = None  
+def snapshot_trace(constrings, snapshot_id, code, message):
+    global trace_engines
+    if trace_engines is None:
+         trace_engines = [engine.create_engine(constr, echo=False) for constr in constrings]
+    
+    now = datetime.utcnow()
+    for engine_instance in trace_engines:
+        conn = engine_instance.connect()                
+        try:
+            result = conn.execute(traces.insert().values(snapshot_id=snapshot_id, code=code, message=message, created_at=now, updated_at=now))
+        finally:
+            conn.close()
 
 class ScrapySyslogObserver(syslog.SyslogObserver):
 
